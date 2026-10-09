@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { AGENT_MODELS, DEFAULT_LOOKS } from '../hooks/config'
-import { SQUAD, isLooks, parseCrew, savedPercent, startTurn, stepCost, tierState, validMembers, withDefaults } from '../hooks/crew'
+import { isLooks, parseCrew, savedPercent, startTurn, stepCost, tierState, validMembers, withDefaults } from '../hooks/crew'
 import { agentTier, tierOfModel } from '../hooks/router'
 import { strings } from '../hooks/strings'
 import type { Member, Reason } from '../types'
@@ -112,21 +112,6 @@ describe('looks and words', () => {
       for (const reason of reasons) expect(strings(lang).reason(reason).length).toBeGreaterThan(0)
       expect(strings(lang).colors.length).toBe(12)
     }
-  })
-})
-
-describe('/crew-test squad', () => {
-  test('each squad task is routed to its own model, in both languages', () => {
-    for (const lang of ['en', 'it'] as const) {
-      const tiers = SQUAD[lang].map(task => agentTier(task.subagentType, `${task.description} ${task.prompt}`).tier)
-      expect(tiers).toEqual(SQUAD[lang].map(task => task.tier))
-      expect(new Set(tiers).size).toBe(3)
-    }
-  })
-
-  test('/crew auto only switches the mode; the squad is /crew-test', () => {
-    expect(parseCrew('auto')).toEqual({ kind: 'mode', mode: 'auto' })
-    expect(parseCrew('test')).toEqual({ kind: 'squad' })
   })
 })
 

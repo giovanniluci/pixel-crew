@@ -6,7 +6,9 @@ Haiku, Sonnet and Opus each get their own pixel mascot and their own progress ba
 
 *🇮🇹 Italiano più sotto.*
 
-<!-- Add a screenshot of the pane here: ![Pixel Crew pane](docs/pane.png) -->
+![Pixel Crew pane](docs/Screenshot1.png)
+
+![Pixel Crew pane](docs/Screenshot2.png)
 
 ## Why
 
@@ -72,7 +74,6 @@ claude --plugin-dir /path/to/pixel-crew
 | --- | --- |
 | `/crew` | opens the pane and shows the current settings |
 | `/crew-auto` or `/crew auto` | automatic routing (default) |
-| `/crew-test` | test run: starts one subagent per model in parallel (Explore → Haiku, general-purpose → Sonnet, Plan → Opus) and checks each against the model it really got. Costs the tokens of three subagents |
 | `/crew-haiku` · `/crew-sonnet` · `/crew-opus` | one model for every message |
 | `/crew classifier on\|off` | ask Haiku when the keywords can't decide |
 | `/crew cache 60k` · `/crew cache off` | cache-guard threshold |
@@ -110,7 +111,7 @@ The savings figure is an estimate from public per-token prices. It assumes the s
 - **Protezione cache:** con più di 40k token di contesto non scende mai di modello; salire è sempre permesso.
 - **Escalation:** se rispondi "non funziona ancora", il turno dopo sale di un livello.
 - **Riquadro:** tre operatori sempre visibili, ognuno con la sua barra; un nuovo comando azzera le barre.
-- **Comandi:** `/crew`, `/crew-auto`, `/crew-haiku`, `/crew-sonnet`, `/crew-opus`, `/crew-test`, `/crew classifier on|off`, `/crew cache 60k|off`, `/crew lang it`, `/crew reset`.
+- **Comandi:** `/crew`, `/crew-auto`, `/crew-haiku`, `/crew-sonnet`, `/crew-opus`, `/crew classifier on|off`, `/crew cache 60k|off`, `/crew lang it`, `/crew reset`.
 - **Personalizza:** colore del corpo, cappello e colore del cappello per ogni omino, dal riquadro.
 
 > Anthropic misura i limiti in due finestre, 5 ore e 7 giorni. Le barre compaiono solo con un abbonamento Pro/Max, dopo il primo messaggio.

@@ -7,7 +7,7 @@ import {
   TIER_COLOR, TIER_LABEL,
 } from './config'
 import type { CrewCommand } from './crew'
-import { SQUAD, isLooks, isSettings, parseCrew, savedPercent, startTurn, stepCost, tierState, validMembers, withDefaults } from './crew'
+import { isLooks, isSettings, parseCrew, savedPercent, startTurn, stepCost, tierState, validMembers, withDefaults } from './crew'
 import type { Decision } from './router'
 import { agentTier, classifierPrompt, decideTier, parseVerdict, tierOfModel } from './router'
 import { activitySvg, activityText, barSvg, barText, limitColor, spriteSvg } from './sprite'
@@ -140,56 +140,6 @@ const newMember = (fields: Pick<Member, 'id' | 'kind' | 'name' | 'tier' | 'reaso
   steps: 0,
 })
 
-/**
- * /crew-test: back to automatic routing, then one subagent per model in
- * parallel. Our own agent.spawn hook is skipped for a spawn this plugin makes,
- * so each model is picked here with the same rules and checked against the
- * model the subagent really got.
- */
-/** A tool error as one readable line: its message, not the raw JSON around it. */
-function shortError(text: string): string {
-  const message = /"message":\s*"((?:[^"\\]|\\.)*)"/.exec(text)?.[1]
-  const line = (message ?? text).replace(/<\/?tool_use_error>/g, '').replace(/\\"/g, '"').replace(/\s+/g, ' ').trim()
-
-  return line.length > 140 ? `${line.slice(0, 137)}…` : line
-}
-
-async function startSquad($: EngineInterface): Promise<string> {
-  await setMode($, 'auto')
-  const { lang } = await read($, settings)
-  const t = strings(lang)
-  const at = await $.clock.now()
-  await update($, crew, () => [])
-  await update($, commandStart, () => at)
-  await $.ui.open({ id: PANE, title: 'Pixel Crew' })
-
-  const results = await Promise.all(SQUAD[lang].map(async task => {
-    const decision = agentTier(task.subagentType, `${task.description} ${task.prompt}`)
-    const result = await $.agent.spawn({
-      subagentType: task.subagentType,
-      description: task.description,
-      prompt: task.prompt,
-      model: AGENT_MODELS[decision.tier],
-    }).catch((error: unknown) => ({ deny: String(error) }))
-    if (result.deny !== undefined || result.agentId === undefined) {
-      return t.squadDenied(MODEL_LABEL[task.tier], shortError(result.deny ?? '—'))
-    }
-    await addMember($, newMember({
-      id: result.agentId,
-      kind: 'agent',
-      name: task.description,
-      tier: decision.tier,
-      reason: decision.reason,
-      startedAt: at,
-    }))
-    const isRight = decision.tier === task.tier && tierOfModel(result.model) === task.tier
-
-    return t.squadRow(MODEL_LABEL[task.tier], result.model, isRight)
-  }))
-
-  return [t.squadStarted, ...results].join('\n')
-}
-
 async function runCrew($: EngineInterface, command: CrewCommand) {
   const t = strings((await read($, settings)).lang)
   switch (command.kind) {
@@ -216,8 +166,6 @@ async function runCrew($: EngineInterface, command: CrewCommand) {
       return { text: strings(command.lang).langSet }
     case 'help':
       return { text: t.help }
-    case 'squad':
-      return { text: await startSquad($) }
     case 'status':
       await $.ui.open({ id: PANE, title: 'Pixel Crew' })
 
@@ -229,7 +177,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const description = strings('en')
     await $.command.register({ name: 'crew', description: description.commandDescription })
-    for (const [name, label] of [['crew-auto', 'Auto'], ['crew-test', 'Test'], ['crew-haiku', 'Haiku'], ['crew-sonnet', 'Sonnet'], ['crew-opus', 'Opus']] as const) {
+    for (const [name, label] of [['crew-auto', 'Auto'],['crew-haiku', 'Haiku'], ['crew-sonnet', 'Sonnet'], ['crew-opus', 'Opus']] as const) {
       await $.command.register({ name, description: `Pixel Crew: ${label}` })
     }
 
@@ -261,7 +209,6 @@ export const register: Register = on => {
   on('command.run', { command: 'crew' }, ($, e) => runCrew($, parseCrew(e.args)))
   // One command per model; extra words after them are ignored.
   on('command.run', { command: 'crew-auto' }, $ => runCrew($, { kind: 'mode', mode: 'auto' }))
-  on('command.run', { command: 'crew-test' }, $ => runCrew($, { kind: 'squad' }))
   on('command.run', { command: 'crew-haiku' }, $ => runCrew($, { kind: 'mode', mode: 'light' }))
   on('command.run', { command: 'crew-sonnet' }, $ => runCrew($, { kind: 'mode', mode: 'medium' }))
   on('command.run', { command: 'crew-opus' }, $ => runCrew($, { kind: 'mode', mode: 'heavy' }))
