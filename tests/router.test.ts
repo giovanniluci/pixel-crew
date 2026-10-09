@@ -13,7 +13,7 @@ describe('routing rules', () => {
 
   test('keywords match whole words, not pieces of other words', async () => {
     expect(ruleTier('start the debugger please')?.tier).toBe('heavy') // "debug" starts the word
-    expect(ruleTier('add a terrorist level to the game')).toBe(null) // "error" is inside a word
+    expect(ruleTier('a terrorist level in the game')).toBe(null) // "error" is inside a word
     expect(ruleTier('plan the release')?.tier).toBe('heavy')
     expect(ruleTier('draw a planet')).toBe(null) // "plan " must be the whole word
     expect(ruleTier('apri il progetto')?.tier).toBe('light') // "progetto" is not "progetta"
@@ -22,6 +22,20 @@ describe('routing rules', () => {
   test('a negated keyword does not count', async () => {
     expect(ruleTier('mostra il log, nessun errore')?.tier).toBe('light')
     expect(ruleTier('show the log, no errors')?.tier).toBe('light')
+  })
+
+  test('each tier has its own keywords, in Italian and English', async () => {
+    for (const text of ['elenca i file', 'list the files', 'dimmi la versione', 'grep for TODO']) expect(ruleTier(text)?.tier).toBe('light')
+    for (const text of ['scrivi una funzione', 'write a function', 'aggiungi un pulsante', 'fix the typo', 'spiega questo codice']) expect(ruleTier(text)?.tier).toBe('medium')
+    for (const text of ['progetta il backend', 'design the backend', 'trova la causa principale', 'investigate the crash']) expect(ruleTier(text)?.tier).not.toBe('light')
+    expect(ruleTier('progetta il backend')?.tier).toBe('heavy')
+    expect(ruleTier('investigate the memory leak')?.tier).toBe('heavy')
+  })
+
+  test('reading plus writing is normal work, not light', async () => {
+    expect(ruleTier('leggi il README e scrivi una descrizione')?.tier).toBe('medium')
+    expect(ruleTier('read the README and write a summary')?.tier).toBe('medium')
+    expect(agentTier('general-purpose', 'Leggi README.md e scrivi una breve descrizione').tier).toBe('medium')
   })
 
   test('a negation must be a whole word before the keyword', async () => {
@@ -97,10 +111,11 @@ describe('deciding a turn', () => {
     expect((await decideTier(input({ text: 'list files' }))).tier).toBe('light')
   })
 
-  test('with a long context the model does not change, up or down', async () => {
+  test('with a long context a step down is refused, a step up is always allowed', async () => {
     const long = { contextTokens: async () => 100_000 }
     expect(await decideTier(input({ ...long, text: 'list files' }))).toMatchObject({ tier: 'medium', reason: { kind: 'cache', wanted: 'light' } })
-    expect(await decideTier(input({ ...long, text: 'refactor the module' }))).toMatchObject({ tier: 'medium', reason: { kind: 'cache', wanted: 'heavy' } })
+    // Going up must work even on a long conversation, or Haiku becomes sticky.
+    expect((await decideTier(input({ ...long, lastTier: 'light', text: 'refactor the module' }))).tier).toBe('heavy')
     expect((await decideTier(input({ ...long, keepCacheAbove: null, text: 'list files' }))).tier).toBe('light')
   })
 

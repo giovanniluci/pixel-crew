@@ -127,6 +127,26 @@ export function isSettings(value: unknown): value is Settings {
     && (v.lang === 'en' || v.lang === 'it')
 }
 
+/** One task of the squad test: a subagent type and a task meant for one tier. */
+export type SquadTask = { tier: Tier; subagentType: string; description: string; prompt: string }
+
+/**
+ * The three subagents /crew-auto starts to show the crew at work. Each task is
+ * written so the routing rules give it its own tier; the tests check that.
+ */
+export const SQUAD: Record<Lang, SquadTask[]> = {
+  en: [
+    { tier: 'light', subagentType: 'Explore', description: 'List the project files', prompt: 'List the files in the working directory, one line each. Answer in at most 10 lines.' },
+    { tier: 'medium', subagentType: 'general-purpose', description: 'Describe the project', prompt: 'Write in 3 lines what the project in the working directory does.' },
+    { tier: 'heavy', subagentType: 'Plan', description: 'Plan an improvement', prompt: 'Design in 5 short points one improvement for the project in the working directory.' },
+  ],
+  it: [
+    { tier: 'light', subagentType: 'Explore', description: 'Elenca i file del progetto', prompt: 'Elenca i file nella cartella di lavoro, una riga ciascuno. Rispondi in massimo 10 righe.' },
+    { tier: 'medium', subagentType: 'general-purpose', description: 'Descrivi il progetto', prompt: 'Scrivi in 3 righe cosa fa il progetto nella cartella di lavoro.' },
+    { tier: 'heavy', subagentType: 'Plan', description: 'Progetta un miglioramento', prompt: 'Progetta in 5 punti brevi un miglioramento per il progetto nella cartella di lavoro.' },
+  ],
+}
+
 /** What a `/crew` command asks for. Only the first words count, so extra text is ignored. */
 export type CrewCommand =
   | { kind: 'status' }
@@ -136,6 +156,7 @@ export type CrewCommand =
   | { kind: 'classifier'; on: boolean }
   | { kind: 'cache'; above: number | null }
   | { kind: 'lang'; lang: Lang }
+  | { kind: 'squad' }
 
 const MODE_WORDS: Record<string, Mode> = { auto: 'auto', haiku: 'light', sonnet: 'medium', opus: 'heavy' }
 
@@ -144,6 +165,7 @@ export function parseCrew(args: string): CrewCommand {
   const mode = MODE_WORDS[first]
   if (mode !== undefined) return { kind: 'mode', mode }
   if (first === 'reset') return { kind: 'reset' }
+  if (first === 'test') return { kind: 'squad' }
   if (first === 'help' || first === 'aiuto') return { kind: 'help' }
   if (first === 'classifier' && (second === 'on' || second === 'off')) return { kind: 'classifier', on: second === 'on' }
   if (first === 'cache') {

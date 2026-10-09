@@ -14,14 +14,31 @@ Most of what you ask a coding agent is light work: find a file, list some functi
 
 ## How it routes
 
-1. **Keyword rules (free).** "find", "list", "show", "summarize"… go to Haiku. "refactor", "debug", "design", "security"… go to Opus. Keywords match whole words, so "bug" does not fire inside "debugger" and "error" does not fire after "no" ("no errors").
+1. **Keyword rules (free).** Each model has its own keywords, in English and Italian (list below). Keywords match whole words, so "bug" does not fire inside "debugger" and "error" does not fire after "no" ("no errors").
 2. **Haiku classifier (a few tokens).** When the rules can't decide (no keyword, mixed signals, a long message or code), Haiku answers *easy / medium / hard*. If it takes more than 2.5 s or fails, the message goes to Sonnet.
-3. **Cache guard.** The prompt cache belongs to one model, so switching models in a long conversation re-reads everything at full price. Above 40k tokens of context the model is never changed, up or down.
+3. **Cache guard.** The prompt cache belongs to one model, so stepping down in a long conversation re-reads everything at full price. Above 40k tokens of context the model never steps down; stepping up is always allowed.
 4. **Escalation.** Reply "still not working" (or "non funziona ancora") and the next turn moves one tier up.
-5. **Follow-ups.** "ok", "go on", "continue" keep the current model.
-6. **Subagents by type.** Explorers and searchers → Haiku; planners, reviewers and architects → Opus, plugin agents included (`feature-dev:code-explorer`, `pr-review-toolkit:code-reviewer`…); everything else by its task.
+5. **Short replies.** "no", "yes", "ok", "thanks", "grazie", "ciao"… always go to Haiku. "go on", "continue", "vai", "procedi" keep the current model.
+6. **Subagents by type.** Explorers and searchers → Haiku; planners, reviewers and architects → Opus, plugin agents included (`feature-dev:code-explorer`, `pr-review-toolkit:code-reviewer`…); everything else by the keywords of its task.
 
 The model never changes in the middle of a turn, so the cache stays warm.
+
+## Keywords
+
+Write one of these words in your message (or in a subagent's task) to send it to that model. They match the start of a word, so "summar" also matches "summarize" and "summary". The full lists are in `hooks/config.ts`.
+
+| Model | English | Italiano |
+| --- | --- | --- |
+| 🟢 **Haiku** (light) | read, find, list, search, show, summarize, translate, rename, open, where, what is, which, how many, count, print, display, tell me, check if, look up, grep, locate, format, sort, copy, move, exists, version | leggi, cerca, trova, elenca, mostra, riassumi, traduci, rinomina, apri, dove, quanti, cos'è, qual è, quale, controlla se, verifica se, conta, stampa, visualizza, dimmi, formatta, ordina, copia, sposta, esiste, versione |
+| 🔵 **Sonnet** (medium) | write, add, modify, create, update, fix, change, explain, complete, generate, document, comment, convert, extend, integrate, configure, install, connect, edit, build, tests, replace, remove, delete | scrivi, aggiungi, modifica, crea, aggiorna, correggi, cambia, spiega, completa, genera, documenta, commenta, converti, estendi, integra, configura, installa, collega, test, sostituisci, rimuovi, elimina |
+| 🟠 **Opus** (heavy) | design, architect, refactor, debug, bug, why does, not working, error, analyze, optimize, security, migrate, strategy, plan, review, rewrite, implement, algorithm, restructure, vulnerability, performance, scalability, concurrency, race condition, deadlock, memory leak, crash, investigate, evaluate, compare, trade-off, from scratch, root cause, deep dive, end-to-end, system design, audit | progetta, architettura, refactor, debug, bug, perché non, non funziona, errore, analizza, ottimizza, sicurezza, migra, strategia, pianifica, revisione, riscrivi, implementa, algoritmo, ristruttura, rifattorizza, vulnerabilità, prestazioni, scalabilità, concorrenza, indaga, valuta, confronta, da zero, causa principale |
+
+When words of different models meet:
+- an Opus word wins over Sonnet ("refactor and add tests" → Opus);
+- a Sonnet word wins over Haiku ("read the README and write a summary" → Sonnet);
+- Opus and Haiku words together ("find the bug") go to the classifier.
+
+Haiku words alone never win on a long message (over 600 characters) or one with code: the classifier decides.
 
 ## The pane
 
@@ -54,7 +71,8 @@ claude --plugin-dir /path/to/pixel-crew
 | Command | What it does |
 | --- | --- |
 | `/crew` | opens the pane and shows the current settings |
-| `/crew-auto` | automatic routing (default) |
+| `/crew-auto` or `/crew auto` | automatic routing (default) |
+| `/crew-test` | test run: starts one subagent per model in parallel (Explore → Haiku, general-purpose → Sonnet, Plan → Opus) and checks each against the model it really got. Costs the tokens of three subagents |
 | `/crew-haiku` · `/crew-sonnet` · `/crew-opus` | one model for every message |
 | `/crew classifier on\|off` | ask Haiku when the keywords can't decide |
 | `/crew cache 60k` · `/crew cache off` | cache-guard threshold |
@@ -87,10 +105,12 @@ The savings figure is an estimate from public per-token prices. It assumes the s
 **Pixel Crew** manda ogni messaggio al modello più economico che basta per il lavoro (Haiku, Sonnet oppure Opus). Tre omini pixel, uno per modello, mostrano in un riquadro chi sta lavorando, perché, quanti token usa e quanto hai risparmiato rispetto a usare sempre Opus.
 
 - **Smistamento:** prima le parole chiave (gratis, parole intere, ignora le negazioni come "nessun errore"); se non bastano decide Haiku in massimo 2,5 secondi, altrimenti Sonnet.
-- **Protezione cache:** con più di 40k token di contesto non cambia modello, né in su né in giù.
+- **Parole chiave:** ogni modello ha le sue, in italiano e in inglese (tabella "Keywords" sopra). Haiku: leggi, cerca, elenca, mostra… Sonnet: scrivi, aggiungi, modifica, spiega… Opus: progetta, refactor, debug, analizza…
+- **Risposte brevi:** "no", "sì", "ok", "grazie", "ciao"… vanno sempre su Haiku.
+- **Protezione cache:** con più di 40k token di contesto non scende mai di modello; salire è sempre permesso.
 - **Escalation:** se rispondi "non funziona ancora", il turno dopo sale di un livello.
 - **Riquadro:** tre operatori sempre visibili, ognuno con la sua barra; un nuovo comando azzera le barre.
-- **Comandi:** `/crew`, `/crew-auto`, `/crew-haiku`, `/crew-sonnet`, `/crew-opus`, `/crew classifier on|off`, `/crew cache 60k|off`, `/crew lang it`, `/crew reset`.
+- **Comandi:** `/crew`, `/crew-auto`, `/crew-haiku`, `/crew-sonnet`, `/crew-opus`, `/crew-test`, `/crew classifier on|off`, `/crew cache 60k|off`, `/crew lang it`, `/crew reset`.
 - **Personalizza:** colore del corpo, cappello e colore del cappello per ogni omino, dal riquadro.
 
 > Anthropic misura i limiti in due finestre, 5 ore e 7 giorni. Le barre compaiono solo con un abbonamento Pro/Max, dopo il primo messaggio.

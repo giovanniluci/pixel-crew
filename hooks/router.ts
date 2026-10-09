@@ -1,6 +1,8 @@
 // Pure routing rules: no `$`, so the tests call them directly.
 import type { Mode, Reason, Tier } from '../types'
-import { COMPLAINTS, FOLLOW_UPS, HEAVY_WORDS, LIGHT_WORDS, LONG_MESSAGE_CHARS, NEGATIONS, SHORT_REPLIES } from './config'
+import {
+  COMPLAINTS, FOLLOW_UPS, HEAVY_WORDS, LIGHT_WORDS, LONG_MESSAGE_CHARS, MEDIUM_WORDS, NEGATIONS, SHORT_REPLIES,
+} from './config'
 
 export type Decision = { tier: Tier; reason: Reason }
 
@@ -75,10 +77,15 @@ export function isBig(text: string): boolean {
 export function ruleTier(text: string): Decision | null {
   const lower = text.toLowerCase()
   const heavy = hits(lower, HEAVY_WORDS)
+  const medium = hits(lower, MEDIUM_WORDS)
   const light = hits(lower, LIGHT_WORDS)
 
   if (heavy.length > 0 && light.length === 0) {
     return { tier: 'heavy', reason: { kind: 'rule', word: heavy[0]?.trim() ?? '' } }
+  }
+  // "read the file and write a summary": the writing decides, not the reading.
+  if (medium.length > 0 && heavy.length === 0) {
+    return { tier: 'medium', reason: { kind: 'rule', word: medium[0]?.trim() ?? '' } }
   }
   if (light.length > 0 && heavy.length === 0 && !isBig(text)) {
     return { tier: 'light', reason: { kind: 'rule', word: light[0]?.trim() ?? '' } }
@@ -129,9 +136,10 @@ export async function decideTier(input: DecideInput): Promise<Decision> {
   if (isComplaint(text)) return { tier: escalate(lastTier), reason: { kind: 'escalation' } }
 
   const decision = ruleTier(text) ?? (await input.classify(text))
-  // The prompt cache belongs to one model: any switch re-reads the whole
-  // conversation at full price, up or down.
-  if (decision.tier !== lastTier && input.keepCacheAbove !== null) {
+  // A step down saves little and, on a long conversation, re-reads it all
+  // without the cache. A step up is never blocked: staying on a cheap model
+  // for hard work would cost quality, and the next light message steps back down.
+  if (RANK[decision.tier] < RANK[lastTier] && input.keepCacheAbove !== null) {
     if ((await input.contextTokens()) > input.keepCacheAbove) {
       return { tier: lastTier, reason: { kind: 'cache', wanted: decision.tier } }
     }

@@ -46,7 +46,7 @@ const EN = {
       case 'agent-asked': return 'model asked by Claude'
     }
   },
-  commandDescription: 'Pixel Crew: open the pane or change settings (help). Models: /crew-auto /crew-haiku /crew-sonnet /crew-opus',
+  commandDescription: 'Pixel Crew: open the pane or change settings (help). Models: /crew-auto /crew-haiku /crew-sonnet /crew-opus. Test: /crew-test',
   status: (mode: Mode, s: Settings) => [
     `Pixel Crew · mode ${MODE_NAME[mode]}`,
     `classifier ${s.useClassifier ? 'on' : 'off'} · cache guard ${s.keepCacheAbove === null ? 'off' : `above ${s.keepCacheAbove.toLocaleString('en')} tokens`} · language en`,
@@ -56,9 +56,13 @@ const EN = {
   classifierSet: (on: boolean) => `Pixel Crew: classifier ${on ? 'on' : 'off'}.`,
   cacheSet: (n: number | null) => `Pixel Crew: cache guard ${n === null ? 'off' : `above ${n.toLocaleString('en')} tokens`}.`,
   langSet: 'Pixel Crew: language English.',
+  squadStarted: 'Pixel Crew: mode Auto. The crew is starting, one subagent per model:',
+  squadRow: (model: string, ran: string, isRight: boolean) => `  ${isRight ? '✓' : '✗'} ${model}: ${isRight ? `running on ${ran}` : `WRONG MODEL, running on ${ran}`}`,
+  squadDenied: (model: string, why: string) => `  ✗ ${model}: not started (${why})`,
   help: [
     '/crew                    open the pane and show the settings',
-    '/crew-auto               automatic routing (default)',
+    '/crew-auto               automatic routing (default); same as /crew auto',
+    '/crew-test               test run: one subagent per model, in parallel',
     '/crew-haiku  /crew-sonnet  /crew-opus   one model for every message',
     '/crew classifier on|off  ask Haiku when the keywords cannot decide',
     '/crew cache <tokens>|off keep the model above this much context',
@@ -121,9 +125,13 @@ const IT: typeof EN = {
   classifierSet: on => `Pixel Crew: smistatore ${on ? 'acceso' : 'spento'}.`,
   cacheSet: n => `Pixel Crew: protezione cache ${n === null ? 'spenta' : `sopra ${n.toLocaleString('it')} token`}.`,
   langSet: 'Pixel Crew: lingua italiana.',
+  squadStarted: 'Pixel Crew: modalità Auto. La squadra parte, un subagent per modello:',
+  squadRow: (model, ran, isRight) => `  ${isRight ? '✓' : '✗'} ${model}: ${isRight ? `al lavoro su ${ran}` : `MODELLO SBAGLIATO, gira su ${ran}`}`,
+  squadDenied: (model, why) => `  ✗ ${model}: non partito (${why})`,
   help: [
     '/crew                    apre il riquadro e mostra le impostazioni',
-    '/crew-auto               smistamento automatico (predefinito)',
+    '/crew-auto               smistamento automatico (predefinito); come /crew auto',
+    '/crew-test               prova: un subagent per modello, in parallelo',
     '/crew-haiku  /crew-sonnet  /crew-opus   un modello per tutti i messaggi',
     '/crew classifier on|off  chiede a Haiku quando le parole chiave non bastano',
     '/crew cache <token>|off  non cambia modello sopra questo contesto',
