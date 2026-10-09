@@ -1,0 +1,14 @@
+{
+  "name": "pixel-crew",
+  "owner": {
+    "name": "Giovanni"
+  },
+  "description": "Pixel Crew: smart model routing and a pixel agent pane for Claude Code.",
+  "plugins": [
+    {
+      "name": "pixel-crew",
+      "source": "./",
+      "description": "Smart model routing to save tokens, with pixel agents and usage limits in a side pane."
+    }
+  ]
+}

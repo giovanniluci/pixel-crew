@@ -1,0 +1,5 @@
+# Written by Claude Code at every load
+.claude-plugin/types/
+node_modules/
+.DS_Store
+Thumbs.db

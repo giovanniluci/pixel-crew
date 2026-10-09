@@ -1,0 +1,10 @@
+{
+  "name": "pixel-crew",
+  "version": "0.1.0",
+  "description": "Smart model routing (Haiku / Sonnet / Opus) to save tokens, with a side pane of pixel agents and your usage limits.",
+  "author": {
+    "name": "Giovanni"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
