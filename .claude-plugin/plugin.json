@@ -1,10 +1,11 @@
 {
   "name": "pixel-crew",
-  "version": "0.1.0",
-  "description": "Smart model routing (Haiku / Sonnet / Opus) to save tokens, with a side pane of pixel agents and your usage limits.",
+  "version": "0.2.0",
+  "description": "Routes every message to the cheapest model that can do it (Haiku, Sonnet or Opus) and shows three pixel workers, their cost and your savings in a side pane.",
   "author": {
     "name": "Giovanni"
   },
   "license": "MIT",
+  "keywords": ["model-routing", "cost-saving", "haiku", "sonnet", "opus", "usage-limits", "pixel-art", "tokens"],
   "types": "./types/index.d.ts"
 }

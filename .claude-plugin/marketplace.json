@@ -8,7 +8,9 @@
     {
       "name": "pixel-crew",
       "source": "./",
-      "description": "Smart model routing to save tokens, with pixel agents and usage limits in a side pane."
+      "description": "Routes every message to Haiku, Sonnet or Opus to save tokens, with three pixel workers, costs and usage limits in a side pane.",
+      "category": "productivity",
+      "tags": ["model-routing", "cost-saving", "usage-limits"]
     }
   ]
 }

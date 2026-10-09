@@ -1,17 +1,22 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionRateLimit, TurnStepResult } from 'claude-code'
 
-import type { Limit, Look, Looks, Member, Mode, Tier } from '../types'
+import type { Hat, Limit, Looks, Member, Mode, Settings, Tier } from '../types'
 import {
-  CLASSIFIER_MODEL, DEFAULT_LOOKS, EFFORT, HATS, KEEP_CACHE_ABOVE_TOKENS, MODEL_LABEL, MODELS,
-  PALETTE, TIER_COLOR, TIER_LABEL, USE_CLASSIFIER,
+  CLASSIFIER_MODEL, CLASSIFIER_TIMEOUT_MS, DEFAULT_LOOKS, DEFAULT_SETTINGS, EFFORT, HATS, MODEL_LABEL, MODELS,
+  TIER_COLOR, TIER_LABEL,
 } from './config'
+import type { CrewCommand } from './crew'
+import { isLooks, isSettings, parseCrew, savedPercent, startTurn, stepCost, tierState, validMembers, withDefaults } from './crew'
 import type { Decision } from './router'
-import { RANK, agentTier, classifierPrompt, isFollowUp, parseVerdict, ruleTier, tierOfModel } from './router'
-import { barSvg, barText, limitColor, spriteSvg } from './sprite'
+import { agentTier, classifierPrompt, decideTier, parseVerdict, tierOfModel } from './router'
+import { activitySvg, activityText, barSvg, barText, limitColor, spriteSvg } from './sprite'
+import { colorOptions, hatOptions, strings, systemLang } from './strings'
 
 const PANE = 'pixel-crew'
 const TIERS: Tier[] = ['light', 'medium', 'heavy']
+const MODES: Mode[] = ['auto', 'light', 'medium', 'heavy']
+const MODE_LABEL: Record<Mode, string> = { auto: 'Auto', ...MODEL_LABEL }
 
 const mode = atom({ plugin: 'pixel-crew', key: 'mode' } as const, 'auto')
 const crew = atom({ plugin: 'pixel-crew', key: 'crew' } as const, [])
@@ -20,15 +25,9 @@ const costUsd = atom({ plugin: 'pixel-crew', key: 'costUsd' } as const, null)
 const looks = atom({ plugin: 'pixel-crew', key: 'looks' } as const, DEFAULT_LOOKS)
 const isEditing = atom({ plugin: 'pixel-crew', key: 'isEditing' } as const, false)
 const now = atom({ plugin: 'pixel-crew', key: 'now' } as const, 0)
-const sessionStart = atom({ plugin: 'pixel-crew', key: 'sessionStart' } as const, 0)
-
-const MODES: Mode[] = ['auto', 'light', 'medium', 'heavy']
-const MODE_LABEL: Record<Mode, string> = { auto: 'Auto', light: 'Haiku', medium: 'Sonnet', heavy: 'Opus' }
-const LIMIT_LABEL: Record<string, string> = {
-  five_hour: 'Sessione (5 ore)',
-  seven_day: 'Settimana (7 giorni)',
-  spend_limit: 'Limite di spesa',
-}
+const commandStart = atom({ plugin: 'pixel-crew', key: 'commandStart' } as const, 0)
+const settings = atom({ plugin: 'pixel-crew', key: 'settings' } as const, DEFAULT_SETTINGS)
+const spend = atom({ plugin: 'pixel-crew', key: 'spend' } as const, { cost: 0, opusCost: 0 })
 
 const toLimit = (one: SessionRateLimit): Limit => ({
   kind: one.kind,
@@ -36,14 +35,14 @@ const toLimit = (one: SessionRateLimit): Limit => ({
   resetsAt: one.resetsAt ?? null,
 })
 
-const next_ = <T,>(list: readonly T[], current: T): T => list[(list.indexOf(current) + 1) % list.length] ?? current
-
 function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
   if (tokens >= 1000) return `${Math.round(tokens / 1000)}k`
 
   return String(tokens)
 }
+
+const formatUsd = (usd: number) => `≈$${usd < 0.01 && usd > 0 ? usd.toFixed(3) : usd.toFixed(2)}`
 
 function formatTime(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000))
@@ -54,57 +53,32 @@ function formatTime(ms: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`
 }
 
-function formatReset(iso: string | null, at: number): string {
+function formatReset(iso: string | null, at: number, t: ReturnType<typeof strings>): string {
   if (iso === null) return ''
   const ms = Date.parse(iso) - at
-  if (!Number.isFinite(ms) || ms <= 0) return 'si azzera ora'
+  if (!Number.isFinite(ms) || ms <= 0) return t.resetsNow
   const hours = Math.floor(ms / 3_600_000)
-  const minutes = Math.floor((ms % 3_600_000) / 60_000)
-  if (hours >= 24) return `si azzera tra ${Math.floor(hours / 24)}g ${hours % 24}h`
 
-  return `si azzera tra ${hours}h ${minutes}m`
+  return t.resetsIn(Math.floor(hours / 24), hours >= 24 ? hours % 24 : hours, Math.floor((ms % 3_600_000) / 60_000))
 }
 
-function isLooks(value: unknown): value is Looks {
-  if (typeof value !== 'object' || value === null) return false
-  const v = value as Record<string, unknown>
-
-  return typeof v.body === 'string' && TIERS.every(t => typeof v[t] === 'object' && v[t] !== null)
-}
-
-// Per-turn decisions; a reload forgets them and the next message decides again.
-const decisions = new Map<string, Decision>()
+// The main turn's decision; only one main turn runs at a time, so a new one replaces it.
+let current: { turnId: string; decision: Decision } | null = null
 let lastTier: Tier = 'medium'
 
-async function classify($: EngineInterface, text: string): Promise<Decision> {
-  if (!USE_CLASSIFIER) return { tier: 'medium', reason: 'nessuna regola: medio' }
+async function classify($: EngineInterface, text: string, useClassifier: boolean): Promise<Decision> {
+  if (!useClassifier) return { tier: 'medium', reason: { kind: 'classifier-off' } }
   const reply = await $.model.complete({
     model: CLASSIFIER_MODEL,
     prompt: classifierPrompt(text),
     maxTokens: 5,
-    timeoutMs: 8000,
-  })
-  if (!reply.isAnswered) return { tier: 'medium', reason: 'smistatore non disponibile' }
+    timeoutMs: CLASSIFIER_TIMEOUT_MS,
+  }).catch(() => undefined)
+  if (reply === undefined || !reply.isAnswered) return { tier: 'medium', reason: { kind: 'classifier-failed' } }
   const tier = parseVerdict(reply.text)
+  if (tier === null) return { tier: 'medium', reason: { kind: 'classifier-failed' } }
 
-  return { tier: tier ?? 'medium', reason: `Haiku: ${reply.text.trim().toLowerCase() || '?'}` }
-}
-
-async function decide($: EngineInterface, text: string): Promise<Decision> {
-  const pinned = await read($, mode)
-  if (pinned !== 'auto') return { tier: pinned, reason: 'scelto a mano' }
-  const trimmed = text.trim()
-  if (trimmed === '' || isFollowUp(trimmed)) return { tier: lastTier, reason: 'continua come prima' }
-
-  const decision = ruleTier(trimmed) ?? (await classify($, trimmed))
-  if (RANK[decision.tier] < RANK[lastTier]) {
-    const { context } = await $.session.usage()
-    if ((context.tokens ?? 0) > KEEP_CACHE_ABOVE_TOKENS) {
-      return { tier: lastTier, reason: `resto su ${MODEL_LABEL[lastTier]}: contesto lungo, la cache vale di più` }
-    }
-  }
-
-  return decision
+  return { tier, reason: { kind: 'classifier', answer: reply.text.trim().toLowerCase() } }
 }
 
 async function addMember($: EngineInterface, member: Member) {
@@ -112,16 +86,23 @@ async function addMember($: EngineInterface, member: Member) {
 }
 
 async function recordStep($: EngineInterface, id: string, result: TurnStepResult) {
-  const usage = result.usage
-  const tokens = usage === null
-    ? 0
-    : usage.input_tokens + usage.output_tokens
-      + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
-  await update($, crew, list =>
-    list.map(one => (one.id === id && one.status === 'running'
-      ? { ...one, tokens: one.tokens + tokens, steps: one.steps + 1 }
+  const list = validMembers(await read($, crew))
+  const member = list.find(one => one.id === id && one.status === 'running')
+  if (member === undefined) return
+  const step = stepCost(member.tier, result.usage)
+  await update($, crew, all =>
+    all.map(one => (one.id === id
+      ? {
+          ...one,
+          steps: one.steps + 1,
+          tokens: one.tokens + step.tokens,
+          cached: one.cached + step.cached,
+          cost: one.cost + step.cost,
+          opusCost: one.opusCost + step.opusCost,
+        }
       : one)),
   )
+  await update($, spend, old => ({ cost: old.cost + step.cost, opusCost: old.opusCost + step.opusCost }))
 }
 
 async function finish($: EngineInterface, id: string) {
@@ -136,17 +117,69 @@ async function setMode($: EngineInterface, value: Mode) {
   await $.store.set('mode', value)
 }
 
+async function setSettings($: EngineInterface, change: (old: Settings) => Settings) {
+  const fresh = await update($, settings, change)
+  await $.store.set('settings', fresh)
+
+  return fresh
+}
+
 async function setLooks($: EngineInterface, change: (old: Looks) => Looks) {
-  const fresh = await update($, looks, change)
+  const fresh = await update($, looks, old => change(withDefaults(old, DEFAULT_LOOKS)))
   await $.store.set('looks', fresh)
+}
+
+const newMember = (fields: Pick<Member, 'id' | 'kind' | 'name' | 'tier' | 'reason' | 'startedAt'>): Member => ({
+  ...fields,
+  status: 'running',
+  endedAt: null,
+  tokens: 0,
+  cached: 0,
+  cost: 0,
+  opusCost: 0,
+  steps: 0,
+})
+
+async function runCrew($: EngineInterface, command: CrewCommand) {
+  const t = strings((await read($, settings)).lang)
+  switch (command.kind) {
+    case 'mode':
+      await setMode($, command.mode)
+      await $.ui.open({ id: PANE, title: 'Pixel Crew' })
+
+      return { text: t.modeSet(command.mode) }
+    case 'reset':
+      await update($, crew, () => [])
+
+      return { text: t.cleared }
+    case 'classifier':
+      await setSettings($, old => ({ ...old, useClassifier: command.on }))
+
+      return { text: t.classifierSet(command.on) }
+    case 'cache':
+      await setSettings($, old => ({ ...old, keepCacheAbove: command.above }))
+
+      return { text: t.cacheSet(command.above) }
+    case 'lang':
+      await setSettings($, old => ({ ...old, lang: command.lang }))
+
+      return { text: strings(command.lang).langSet }
+    case 'help':
+      return { text: t.help }
+    case 'status':
+      await $.ui.open({ id: PANE, title: 'Pixel Crew' })
+
+      return { text: `${t.status(await read($, mode), await read($, settings))}\n\n${t.help}` }
+  }
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'crew',
-      description: 'Pixel Crew: apre il riquadro o sceglie il modello (auto, haiku, sonnet, opus, reset)',
-    })
+    const description = strings('en')
+    await $.command.register({ name: 'crew', description: description.commandDescription })
+    for (const [name, label] of [['crew-auto', 'Auto'], ['crew-haiku', 'Haiku'], ['crew-sonnet', 'Sonnet'], ['crew-opus', 'Opus']] as const) {
+      await $.command.register({ name, description: `Pixel Crew: ${label}` })
+    }
 
     const storedMode = await $.store.get('mode')
     if (typeof storedMode === 'string' && MODES.includes(storedMode as Mode)) {
@@ -154,14 +187,15 @@ export const register: Register = on => {
     }
     const storedLooks = await $.store.get('looks')
     if (isLooks(storedLooks)) await update($, looks, () => storedLooks)
+    const storedSettings = await $.store.get('settings')
+    await update($, settings, () => (isSettings(storedSettings) ? storedSettings : { ...DEFAULT_SETTINGS, lang: systemLang() }))
 
     const usage = await $.session.usage()
-    await update($, sessionStart, () => usage.startedAt)
     await update($, limits, () => usage.rateLimits.map(toLimit))
     await update($, costUsd, () => usage.cost?.usd ?? null)
     await update($, now, () => Date.now())
 
-    // Keeps the running timers moving; local only, no tokens.
+    // Keeps the running timers and bars moving; local only, no tokens.
     $.clock.every(1000, async () => {
       const list = await read($, crew)
       if (list.some(one => one.status === 'running')) await update($, now, () => Date.now())
@@ -172,42 +206,38 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'crew' }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase()
-    const byName: Record<string, Mode> = { auto: 'auto', haiku: 'light', sonnet: 'medium', opus: 'heavy' }
-    const picked = byName[arg]
-    if (picked !== undefined) {
-      await setMode($, picked)
-      await $.ui.open({ id: PANE, title: 'Pixel Crew' })
-
-      return { text: `Pixel Crew: modello ${MODE_LABEL[picked]}.` }
-    }
-    if (arg === 'reset') {
-      await update($, crew, () => [])
-
-      return { text: 'Pixel Crew: lista azzerata.' }
-    }
-    await $.ui.open({ id: PANE, title: 'Pixel Crew' })
-
-    return { text: 'Pixel Crew aperto.' }
-  })
+  on('command.run', { command: 'crew' }, ($, e) => runCrew($, parseCrew(e.args)))
+  // One command per model; extra words after them are ignored.
+  on('command.run', { command: 'crew-auto' }, $ => runCrew($, { kind: 'mode', mode: 'auto' }))
+  on('command.run', { command: 'crew-haiku' }, $ => runCrew($, { kind: 'mode', mode: 'light' }))
+  on('command.run', { command: 'crew-sonnet' }, $ => runCrew($, { kind: 'mode', mode: 'medium' }))
+  on('command.run', { command: 'crew-opus' }, $ => runCrew($, { kind: 'mode', mode: 'heavy' }))
 
   on('turn.start', async ($, e, next) => {
-    const decision = await decide($, e.text)
-    decisions.set(e.turnId, decision)
+    const options = await read($, settings)
+    const decision = await decideTier({
+      text: e.text,
+      pinned: await read($, mode),
+      lastTier,
+      keepCacheAbove: options.keepCacheAbove,
+      contextTokens: async () => (await $.session.usage()).context.tokens ?? 0,
+      classify: text => classify($, text, options.useClassifier),
+    })
+    current = { turnId: e.turnId, decision }
     lastTier = decision.tier
-    const name = e.text.trim().split('\n')[0]?.slice(0, 60) || 'Continua'
-    await addMember($, {
+    const startedAt = await $.clock.now()
+    const member = newMember({
       id: e.turnId,
-      name,
+      kind: 'main',
+      name: e.text.trim().split('\n')[0]?.slice(0, 60) || '…',
       tier: decision.tier,
       reason: decision.reason,
-      status: 'running',
-      startedAt: await $.clock.now(),
-      endedAt: null,
-      tokens: 0,
-      steps: 0,
+      startedAt,
     })
+    // A typed command starts a fresh crew, so every bar restarts.
+    const isNewCommand = e.text.trim() !== ''
+    await update($, crew, list => startTurn(list, member, isNewCommand, startedAt))
+    if (isNewCommand) await update($, commandStart, () => startedAt)
 
     return next(e)
   })
@@ -220,7 +250,7 @@ export const register: Register = on => {
 
       return result
     }
-    const decision = decisions.get(e.turnId)
+    const decision = current?.turnId === e.turnId ? current.decision : undefined
     const routed = decision === undefined
       ? e
       : { ...e, model: MODELS[decision.tier], effort: EFFORT[decision.tier] }
@@ -232,7 +262,7 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     await finish($, e.agentId ?? e.turnId)
-    if (e.agentId === undefined) decisions.delete(e.turnId)
+    if (e.agentId === undefined && current?.turnId === e.turnId) current = null
 
     return next(e)
   })
@@ -241,23 +271,20 @@ export const register: Register = on => {
     if (e.workflow !== undefined) return next(e)
     const pinned = await read($, mode)
     const decision: Decision = e.model !== undefined
-      ? { tier: tierOfModel(e.model), reason: 'modello chiesto da Claude' }
+      ? { tier: tierOfModel(e.model), reason: { kind: 'agent-asked' } }
       : pinned !== 'auto'
-        ? { tier: pinned, reason: 'scelto a mano' }
+        ? { tier: pinned, reason: { kind: 'pinned' } }
         : agentTier(e.subagentType, `${e.description} ${e.prompt}`)
     const result = e.model !== undefined ? await next(e) : await next({ ...e, model: MODELS[decision.tier] })
     if (result.agentId !== undefined) {
-      await addMember($, {
+      await addMember($, newMember({
         id: result.agentId,
+        kind: 'agent',
         name: e.description || e.subagentType,
         tier: decision.tier,
         reason: decision.reason,
-        status: 'running',
         startedAt: await $.clock.now(),
-        endedAt: null,
-        tokens: 0,
-        steps: 0,
-      })
+      }))
     }
 
     return result
@@ -271,52 +298,84 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Select } = $.ui.resolve(e)
     const Svg = e.surface !== 'terminal' ? $.ui.resolve(e).Svg : undefined
-    const list = await read($, crew)
+    const list = validMembers(await read($, crew))
     const windows = await read($, limits)
-    const cost = await read($, costUsd)
-    const look = await read($, looks)
+    const sessionCost = await read($, costUsd)
+    const totals = await read($, spend)
+    const look = withDefaults(await read($, looks), DEFAULT_LOOKS)
     const editing = await read($, isEditing)
     const pinned = await read($, mode)
+    const { lang } = await read($, settings)
+    const t = strings(lang)
     const at = Math.max(await read($, now), Date.now())
-    const started = await read($, sessionStart)
+    const tick = Math.floor(at / 1000)
+    const commandAt = await read($, commandStart)
 
-    const running = list.filter(one => one.status === 'running')
-    const done = list.filter(one => one.status === 'done').slice(-6).reverse()
-    const totalTokens = list.reduce((sum, one) => sum + one.tokens, 0)
+    const isWorking = list.some(one => one.status === 'running')
+    const commandCost = list.reduce((sum, one) => sum + one.cost, 0)
+    const commandTokens = list.reduce((sum, one) => sum + one.tokens, 0)
+    const lastEnd = Math.max(0, ...list.map(one => one.endedAt ?? 0))
+    const commandTime = commandAt > 0 ? (isWorking ? at : lastEnd || at) - commandAt : 0
+    const doneCount = list.filter(one => one.status === 'done').length
+    const title = list.find(one => one.kind === 'main')?.name ?? 'Pixel Crew'
 
-    const sprite = (member: Member) => {
-      const hatLook: Look = look[member.tier]
-      if (Svg === undefined) return <Text color={TIER_COLOR[member.tier]}>▣</Text>
+    const sprite = (tier: Tier, isDim: boolean) => {
+      if (Svg === undefined) return <Text color={TIER_COLOR[tier]} dimColor={isDim}>▣</Text>
 
       return (
         <Svg
-          source={spriteSvg(look.body, hatLook, member.status === 'done')}
-          alt={`${MODEL_LABEL[member.tier]} pixel agent`}
+          source={spriteSvg(look[tier].body, look[tier], isDim)}
+          alt={`${MODEL_LABEL[tier]} pixel agent`}
           width={42}
           height={36}
         />
       )
     }
 
-    const row = (member: Member) => {
-      const elapsed = (member.endedAt ?? at) - member.startedAt
+    // Full when done, empty when idle, a sliding block while working: the
+    // number of steps left is unknown, so no percentage is made up.
+    const bar = (key: string, status: 'idle' | 'working' | 'done', color: string) => {
+      if (Svg === undefined) {
+        const text = status === 'working' ? activityText(tick) : barText(status === 'done' ? 100 : 0)
+
+        return <Text key={key} color={color}>{text}</Text>
+      }
+      const source = status === 'working' ? activitySvg(tick, color, 260) : barSvg(status === 'done' ? 100 : 0, color, 260)
+
+      return <Svg key={key} source={source} alt={status} width={260} height={8} />
+    }
+
+    // The three operators are always on screen, each with its own bar.
+    const operator = (tier: Tier) => {
+      const state = tierState(list, tier)
+      const job = state.job
+      const elapsed = state.startedAt === 0 ? 0 : (state.endedAt ?? at) - state.startedAt
+      const marker = state.status === 'working' ? '●' : state.status === 'done' ? '✓' : ''
 
       return (
-        <Box flexDirection="row" gap={1} marginBottom={1}>
-          {sprite(member)}
+        <Box key={`operator-${tier}`} flexDirection="row" gap={1} marginBottom={1}>
+          {sprite(tier, state.status === 'idle')}
           <Box flexDirection="column" flexGrow={1}>
-            <Text bold wrap="truncate-end">{member.name}</Text>
+            <Box flexDirection="row" justifyContent="space-between">
+              <Text bold dimColor={state.status === 'idle'} wrap="truncate-end">
+                {job === undefined ? `${MODEL_LABEL[tier]} · ${t.waiting}` : job.name}
+              </Text>
+              <Text color={state.status === 'done' ? '#3FA66B' : TIER_COLOR[tier]}>{marker}</Text>
+            </Box>
             <Text>
-              <Text color={TIER_COLOR[member.tier]}>{TIER_LABEL[member.tier]}</Text>
-              <Text dimColor> {MODEL_LABEL[member.tier]} · {EFFORT[member.tier]}</Text>
-              {member.status === 'done' && <Text color="#3FA66B"> ✓</Text>}
+              <Text color={TIER_COLOR[tier]}>{TIER_LABEL[tier]}</Text>
+              <Text dimColor> {MODEL_LABEL[tier]} · {EFFORT[tier]}</Text>
+              {state.working > 1 && <Text dimColor> · {t.jobs(state.working)}</Text>}
             </Text>
-            <Text dimColor wrap="truncate-end">{member.reason}</Text>
-            <Text dimColor>
-              {member.steps} passi · {formatTokens(member.tokens)} token · {formatTime(elapsed)}
-            </Text>
+            {job !== undefined && <Text dimColor wrap="truncate-end">{t.reason(job.reason)}</Text>}
+            {job !== undefined && (
+              <Text dimColor>
+                {state.steps} {t.steps} · {formatTokens(state.tokens)} {t.tokens} · {formatTokens(state.cached)} {t.cached} · {formatTime(elapsed)}
+              </Text>
+            )}
+            {bar(`bar-${tier}`, state.status, TIER_COLOR[tier])}
           </Box>
         </Box>
       )
@@ -326,17 +385,24 @@ export const register: Register = on => {
       const color = limitColor(one.percentUsed)
 
       return (
-        <Box flexDirection="column" marginBottom={1}>
+        <Box key={`limit-${one.kind}`} flexDirection="column" marginBottom={1}>
           <Text>
-            {LIMIT_LABEL[one.kind] ?? one.kind} <Text bold color={color}>{one.percentUsed}%</Text>
+            {t.limitLabel[one.kind] ?? one.kind} <Text bold color={color}>{one.percentUsed}%</Text>
           </Text>
           {Svg === undefined
             ? <Text color={color}>{barText(one.percentUsed)}</Text>
-            : <Svg source={barSvg(one.percentUsed, color)} alt={`${one.percentUsed}% usato`} width={240} height={8} />}
-          <Text dimColor>{formatReset(one.resetsAt, at)}</Text>
+            : <Svg source={barSvg(one.percentUsed, color)} alt={`${one.percentUsed}%`} width={240} height={8} />}
+          <Text dimColor>{formatReset(one.resetsAt, at, t)}</Text>
         </Box>
       )
     }
+
+    const card = (label: string, value: string) => (
+      <Box key={`card-${label}`} flexDirection="column" flexGrow={1} borderStyle="round" paddingX={1}>
+        <Text dimColor>{label}</Text>
+        <Text bold>{value}</Text>
+      </Box>
+    )
 
     return (
       <Box flexDirection="column" paddingX={1}>
@@ -351,66 +417,66 @@ export const register: Register = on => {
           ))}
         </Box>
 
-        <Box flexDirection="row" gap={2} marginBottom={1}>
-          <Box flexDirection="column">
-            <Text dimColor>Costo</Text>
-            <Text bold>{cost === null ? '—' : `≈$${cost.toFixed(2)}`}</Text>
-          </Box>
-          <Box flexDirection="column">
-            <Text dimColor>Token</Text>
-            <Text bold>{formatTokens(totalTokens)}</Text>
-          </Box>
-          <Box flexDirection="column">
-            <Text dimColor>Tempo</Text>
-            <Text bold>{started > 0 ? formatTime(at - started) : '—'}</Text>
-          </Box>
+        <Text bold wrap="truncate-end">{title}</Text>
+        <Box flexDirection="row" gap={1}>
+          {card(t.commandCost, list.length > 0 ? formatUsd(commandCost) : '—')}
+          {card(t.commandTokens, formatTokens(commandTokens))}
+          {card(t.commandTime, commandAt > 0 ? formatTime(commandTime) : '—')}
+        </Box>
+        <Box marginBottom={1}>
+          <Text dimColor wrap="wrap">
+            {t.session}: {sessionCost === null ? formatUsd(totals.cost) : formatUsd(sessionCost)}
+            {totals.opusCost > 0 && ` · ${t.saved(formatUsd(totals.opusCost - totals.cost), savedPercent(totals.cost, totals.opusCost))}`}
+          </Text>
         </Box>
 
-        <Text dimColor>In corso · {running.length}</Text>
-        {running.length === 0 && <Text dimColor>Nessuno al lavoro.</Text>}
-        {running.map(row)}
+        <Text dimColor>
+          {t.crew} · {isWorking ? t.crewDone(doneCount, list.length) : list.length > 0 ? t.crewAllDone : t.crewIdle}
+        </Text>
+        {TIERS.map(operator)}
 
-        {done.length > 0 && <Text dimColor>Finiti · {done.length}</Text>}
-        {done.map(row)}
-
-        <Text bold>Limiti di utilizzo</Text>
-        {windows.length === 0
-          ? <Text dimColor>Nessuna lettura ancora (arriva dopo il primo messaggio; solo con abbonamento).</Text>
-          : windows.map(limitRow)}
+        <Text bold>{t.limits}</Text>
+        {windows.length === 0 ? <Text dimColor>{t.noLimits}</Text> : windows.map(limitRow)}
 
         <Box marginTop={1}>
           <Button
             key="edit"
-            label={editing ? 'Chiudi personalizza' : 'Personalizza omini'}
+            label={editing ? t.closeCustomize : t.customize}
             onPress={() => update($, isEditing, value => !value)}
           />
         </Box>
         {editing && (
-          <Box flexDirection="column" marginTop={1}>
-            <Box flexDirection="row" gap={1}>
-              <Text>Corpo</Text>
-              <Button
-                key="body"
-                label={look.body}
-                onPress={() => setLooks($, old => ({ ...old, body: next_(PALETTE, old.body) }))}
-              />
-            </Box>
+          <Box flexDirection="column" marginTop={1} gap={1}>
             {TIERS.map(tier => (
-              <Box flexDirection="row" gap={1}>
-                <Text color={TIER_COLOR[tier]}>{MODEL_LABEL[tier]}</Text>
-                <Button
-                  key={`hat-${tier}`}
-                  label={`Cappello: ${look[tier].hat}`}
-                  onPress={() => setLooks($, old => ({ ...old, [tier]: { ...old[tier], hat: next_(HATS, old[tier].hat) } }))}
-                />
-                <Button
-                  key={`color-${tier}`}
-                  label={look[tier].hatColor}
-                  onPress={() => setLooks($, old => ({ ...old, [tier]: { ...old[tier], hatColor: next_(PALETTE, old[tier].hatColor) } }))}
-                />
+              <Box key={`look-${tier}`} flexDirection="row" gap={1} alignItems="center">
+                {sprite(tier, false)}
+                <Box flexDirection="column" flexGrow={1}>
+                  <Text color={TIER_COLOR[tier]}>{MODEL_LABEL[tier]}</Text>
+                  <Select
+                    key={`body-${tier}`}
+                    label={t.body}
+                    options={colorOptions(lang)}
+                    value={look[tier].body}
+                    onSelect={value => setLooks($, old => ({ ...old, [tier]: { ...old[tier], body: value } }))}
+                  />
+                  <Select
+                    key={`hat-${tier}`}
+                    label={t.hat}
+                    options={hatOptions(lang, HATS)}
+                    value={look[tier].hat}
+                    onSelect={value => setLooks($, old => ({ ...old, [tier]: { ...old[tier], hat: value as Hat } }))}
+                  />
+                  <Select
+                    key={`color-${tier}`}
+                    label={t.hatColor}
+                    options={colorOptions(lang)}
+                    value={look[tier].hatColor}
+                    onSelect={value => setLooks($, old => ({ ...old, [tier]: { ...old[tier], hatColor: value } }))}
+                  />
+                </Box>
               </Box>
             ))}
-            <Button key="reset-looks" label="Ripristina" onPress={() => setLooks($, () => DEFAULT_LOOKS)} />
+            <Button key="reset-looks" label={t.restore} onPress={() => setLooks($, () => DEFAULT_LOOKS)} />
           </Box>
         )}
       </Box>

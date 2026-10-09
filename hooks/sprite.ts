@@ -69,6 +69,28 @@ export function barSvg(percent: number, color: string, width = 240): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="8" viewBox="0 0 ${width} 8"><rect width="${width}" height="8" rx="4" fill="#80808033"/><rect width="${filled.toFixed(1)}" height="8" rx="4" fill="${color}"/></svg>`
 }
 
+/**
+ * A bar for work whose length is unknown: a block that slides along it, one
+ * place per second, instead of a made-up percentage.
+ */
+export function activitySvg(tick: number, color: string, width = 240): string {
+  const block = width * 0.3
+  const travel = width - block
+  const phase = tick % 8
+  const x = (phase < 4 ? phase : 8 - phase) / 4 * travel
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="8" viewBox="0 0 ${width} 8"><rect width="${width}" height="8" rx="4" fill="#80808033"/><rect x="${x.toFixed(1)}" width="${block.toFixed(1)}" height="8" rx="4" fill="${color}"/></svg>`
+}
+
+export function activityText(tick: number, cells = 20): string {
+  const block = 6
+  const travel = cells - block
+  const phase = tick % 8
+  const x = Math.round((phase < 4 ? phase : 8 - phase) / 4 * travel)
+
+  return '░'.repeat(x) + '█'.repeat(block) + '░'.repeat(cells - block - x)
+}
+
 /** The terminal has no Svg: a text bar instead. */
 export function barText(percent: number, cells = 20): string {
   const full = Math.round(Math.max(0, Math.min(100, percent)) / 100 * cells)
